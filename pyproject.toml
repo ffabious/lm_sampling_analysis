@@ -5,7 +5,7 @@ description = ""
 authors = [
     {name = "Kirill Greshnov",email = "kirill.greschnow@gmail.com"}
 ]
-requires-python = ">=3.14,<3.15"
+requires-python = ">=3.11,<3.15"
 dependencies = [
     "torch (>=2.10.0,<3.0.0)",
     "numpy (>=2.4.2,<3.0.0)",
