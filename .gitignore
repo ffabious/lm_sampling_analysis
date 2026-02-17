@@ -1,0 +1,35 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Data and Artifacts
+data/*
+!data/.keep
+checkpoints/*
+!checkpoints/.keep
+
+# Results and Logs
+results/*
+!results/.keep
+*.log
+events.out.tfevents.*
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# OS and IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Environment variables
+.env
