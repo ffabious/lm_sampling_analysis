@@ -1,0 +1,27 @@
+[project]
+name = "lm-sampling-analysis"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Kirill Greshnov",email = "kirill.greschnow@gmail.com"}
+]
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "torch (>=2.10.0,<3.0.0)",
+    "numpy (>=2.4.2,<3.0.0)",
+    "pandas (>=3.0.0,<4.0.0)",
+    "tqdm (>=4.67.3,<5.0.0)",
+    "datasets (>=4.5.0,<5.0.0)",
+    "tokenizers (>=0.22.2,<0.23.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "ipykernel (>=7.2.0,<8.0.0)",
+    "matplotlib (>=3.10.8,<4.0.0)"
+]
