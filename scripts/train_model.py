@@ -4,6 +4,7 @@ import random
 import argparse
 from tqdm.auto import tqdm
 import time
+from pathlib import Path
 
 from src.data.tokenizer import LMTokenizer
 from src.models.gpt import GPTConfig, GPT
@@ -15,7 +16,7 @@ def get_vocab_size():
     except FileNotFoundError:
         print("Tokenizer file not found. Please run the tokenizer training script first.")
         exit(1)
-    return len(tokenizer.vocabulary)
+    return tokenizer.vocab_size
 
 def train_model(batch_size=32, lr=1e-4, epochs=10, num_workers=2, device='cpu', seed=42):
     random.seed(seed)
@@ -27,6 +28,9 @@ def train_model(batch_size=32, lr=1e-4, epochs=10, num_workers=2, device='cpu', 
     model = GPT(config)
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+
+    avg_train_loss = None
+    avg_val_loss = None
 
     for epoch in range(epochs):
         model.train()
@@ -77,8 +81,32 @@ def train_model(batch_size=32, lr=1e-4, epochs=10, num_workers=2, device='cpu', 
         print(f"Validation loss after epoch {epoch + 1}: {avg_val_loss:.4f}")
 
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    torch.save(model.state_dict(), f"gpt_model_{timestamp}.pth")
-    print(f"Model saved as gpt_model_{timestamp}.pth")
+    checkpoint_dir = Path("checkpoints")
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = checkpoint_dir / f"gpt_checkpoint_{timestamp}.pth"
+
+    checkpoint = {
+        "epoch": epochs,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "gpt_config": vars(config),
+        "hparams": {
+            "batch_size": batch_size,
+            "lr": lr,
+            "epochs": epochs,
+            "num_workers": num_workers,
+            "device": device,
+            "seed": seed,
+        },
+        "metrics": {
+            "final_train_loss": avg_train_loss,
+            "final_val_loss": avg_val_loss,
+        },
+        "timestamp": timestamp,
+    }
+
+    torch.save(checkpoint, checkpoint_path)
+    print(f"Full checkpoint saved as {checkpoint_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a GPT model.")
