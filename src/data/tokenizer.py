@@ -50,6 +50,13 @@ class LMTokenizer:
         """
         return set(self.tokenizer.get_vocab().values())
     
+    @property
+    def vocab_size(self):
+        """
+        int: Size of the learned vocabulary.
+        """
+        return int(self.tokenizer.get_vocab_size())
+    
     def encode(self, text: str, add_eos: bool = False):
         """
         Encode text into token IDs.
