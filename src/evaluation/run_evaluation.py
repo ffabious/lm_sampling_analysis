@@ -273,10 +273,11 @@ if __name__ == "__main__":
 
     PATH_TO_TOKENIZER = ""
 
-    config = GPTConfig()
+    tokenizer = LMTokenizer.from_json(PATH_TO_TOKENIZER)
+
+    config = GPTConfig(tokenizer.vocab_size)
     model = GPT(config)
     model.load_state_dict(torch.load(PATH_TO_MODEL))
-    tokenizer = LMTokenizer.from_json(PATH_TO_TOKENIZER)
 
     runner = EvaluationRunner(model, tokenizer, PROMPTS, device="cpu")
     results = runner.run_experiments(SAMPLING_CONFIGS)
