@@ -273,9 +273,7 @@ if __name__ == "__main__":
 
     PATH_TO_TOKENIZER = ""
 
-    VOCAB_SIZE = 1
-        
-    config = GPTConfig(VOCAB_SIZE)
+    config = GPTConfig()
     model = GPT(config)
     model.load_state_dict(torch.load(PATH_TO_MODEL))
     tokenizer = LMTokenizer.from_json(PATH_TO_TOKENIZER)
