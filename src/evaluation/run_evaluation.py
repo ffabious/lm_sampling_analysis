@@ -207,7 +207,6 @@ class EvaluationRunner:
 
 # Example usage script
 if __name__ == "__main__":
-    # Define prompts
     PROMPTS = [
         "Once upon a time",
         "The little cat",
@@ -231,7 +230,6 @@ if __name__ == "__main__":
         "The adventurous rabbit"
     ]
     
-    # Define sampling configurations
     SAMPLING_CONFIGS = {
         "greedy": [SamplingConfig()],  # Greedy ignores config
         
@@ -239,34 +237,6 @@ if __name__ == "__main__":
             SamplingConfig(temperature=t) 
             for t in [0.5, 0.7, 0.9, 1.0, 1.2]
         ],
-        
-        "temperature": [
-            SamplingConfig(temperature=t)
-            for t in [0.5, 0.7, 0.9, 1.0, 1.2]
-        ],
-        
-        "top_k": [
-            SamplingConfig(top_k=k, temperature=0.9)
-            for k in [10, 40, 100]
-        ],
-        
-        "top_p": [
-            SamplingConfig(top_p=p, temperature=0.9)
-            for p in [0.90, 0.95, 0.99]
-        ],
-        
-        "locally_typical": [
-            SamplingConfig(locally_typical_tau=tau, temperature=0.9)
-            for tau in [0.1, 0.2, 0.3]
-        ],
-        
-        "repetition_penalty": [
-            SamplingConfig(repetition_penalty=1.2, temperature=0.9)
-        ],
-        
-        "no_repeat_ngram": [
-            SamplingConfig(no_repeat_ngram_size=4, temperature=0.9)
-        ]
     }
 
     PATH_TO_MODEL = ""
@@ -277,7 +247,9 @@ if __name__ == "__main__":
 
     config = GPTConfig(tokenizer.vocab_size)
     model = GPT(config)
-    model.load_state_dict(torch.load(PATH_TO_MODEL))
+
+    state = torch.load(PATH_TO_MODEL)
+    model.load_state_dict(state["model_state_dict"])
 
     runner = EvaluationRunner(model, tokenizer, PROMPTS, device="cpu")
     results = runner.run_experiments(SAMPLING_CONFIGS)
