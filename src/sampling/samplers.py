@@ -62,6 +62,10 @@ class Sampler:
         # Encode prompt
         input_ids = self.tokenizer.encode(prompt, add_eos=False)
         input_ids = torch.tensor([input_ids], dtype=torch.long, device=self.device)
+
+        max_seq_len = getattr(self.model.config, "max_seq_len", None)
+        if max_seq_len is not None and input_ids.size(1) > max_seq_len:
+            input_ids = input_ids[:, -max_seq_len:]
         
         generated = input_ids.clone()
         past_key_values = None
@@ -78,10 +82,18 @@ class Sampler:
         for _ in range(max_new_tokens):
             # Forward pass
             if past_key_values is not None:
-                # Only pass the last token when we have cached KV
-                model_input = generated[:, -1:]
+                cached_len = past_key_values[0][0].size(2)
+                if max_seq_len is not None and cached_len >= max_seq_len:
+                    past_key_values = None
+                    model_input = generated[:, -max_seq_len:]
+                else:
+                    # Only pass the last token when we have cached KV
+                    model_input = generated[:, -1:]
             else:
-                model_input = generated
+                if max_seq_len is not None and generated.size(1) > max_seq_len:
+                    model_input = generated[:, -max_seq_len:]
+                else:
+                    model_input = generated
             
             outputs = self.model(
                 model_input,
@@ -339,6 +351,10 @@ class GreedySampler(Sampler):
         # Encode prompt
         input_ids = self.tokenizer.encode(prompt, add_eos=False)
         input_ids = torch.tensor([input_ids], dtype=torch.long, device=self.device)
+
+        max_seq_len = getattr(self.model.config, "max_seq_len", None)
+        if max_seq_len is not None and input_ids.size(1) > max_seq_len:
+            input_ids = input_ids[:, -max_seq_len:]
         
         generated = input_ids.clone()
         past_key_values = None
@@ -347,9 +363,17 @@ class GreedySampler(Sampler):
         for _ in range(max_new_tokens):
             # Forward pass
             if past_key_values is not None:
-                model_input = generated[:, -1:]
+                cached_len = past_key_values[0][0].size(2)
+                if max_seq_len is not None and cached_len >= max_seq_len:
+                    past_key_values = None
+                    model_input = generated[:, -max_seq_len:]
+                else:
+                    model_input = generated[:, -1:]
             else:
-                model_input = generated
+                if max_seq_len is not None and generated.size(1) > max_seq_len:
+                    model_input = generated[:, -max_seq_len:]
+                else:
+                    model_input = generated
             
             outputs = self.model(
                 model_input,

@@ -146,7 +146,12 @@ class GPT(nn.Module):
         past_len = 0
         if past_key_values[0] is not None:
             past_len = past_key_values[0][0].size(2)
-        assert past_len + t <= self.config.max_seq_len
+
+        if past_len + t > self.config.max_seq_len:
+            raise ValueError(
+                f"Sequence length overflow: past_len ({past_len}) + current_len ({t}) "
+                f"exceeds max_seq_len ({self.config.max_seq_len})."
+            )
 
         pos = torch.arange(past_len, past_len + t, device=input_ids.device)
         x = self.token_embedding(input_ids) + self.position_embedding(pos)[None, :, :]

@@ -103,11 +103,11 @@ class EvaluationRunner:
             
             results[method_name] = method_results
         
-        # Save results
-        self._save_results(results)
-        
         # Generate plots
         self._generate_plots(results)
+        
+        # Save results
+        self._save_results(results)
         
         return results
     
@@ -231,25 +231,23 @@ if __name__ == "__main__":
     ]
     
     SAMPLING_CONFIGS = {
+        "random": [SamplingConfig(temperature=1.0)],
         "greedy": [SamplingConfig()],  # Greedy ignores config
-        
-        "random": [
-            SamplingConfig(temperature=t) 
-            for t in [0.5, 0.7, 0.9, 1.0, 1.2]
-        ],
     }
 
-    PATH_TO_MODEL = ""
+    PATH_TO_MODEL = "checkpoints/gpt_model_20260221-012858.pth"
 
-    PATH_TO_TOKENIZER = ""
+    PATH_TO_TOKENIZER = "checkpoints/tokenizer.json"
 
     tokenizer = LMTokenizer.from_json(PATH_TO_TOKENIZER)
 
     config = GPTConfig(tokenizer.vocab_size)
     model = GPT(config)
 
-    state = torch.load(PATH_TO_MODEL)
+    state = torch.load(PATH_TO_MODEL, map_location="cpu")
     model.load_state_dict(state["model_state_dict"])
 
     runner = EvaluationRunner(model, tokenizer, PROMPTS, device="cpu")
-    results = runner.run_experiments(SAMPLING_CONFIGS)
+    print("Running evaluation experiments...")
+    with torch.inference_mode():
+        results = runner.run_experiments(SAMPLING_CONFIGS)

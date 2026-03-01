@@ -4,6 +4,7 @@ from typing import List, Dict
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 import nltk
+import bleuscore
 
 try:
     nltk.data.find('tokenizers/punkt')
@@ -15,8 +16,11 @@ class PerplexityEvaluator:
     
     def __init__(self, model_name: str = "distilgpt2", device: str = "cpu"):
         self.device = device
+        print(f"Loading reference model '{model_name}' for perplexity evaluation...")
         self.model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+        print(f"Loading tokenizer for '{model_name}'...")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        print("Reference model and tokenizer loaded successfully.")
         self.model.eval()
         
         if self.tokenizer.pad_token is None:
@@ -44,39 +48,41 @@ class PerplexityEvaluator:
 
 
 class SelfBleuEvaluator:
-    """Compute Self-BLEU score to measure diversity."""
+    """Compute Self-BLEU score to measure diversity using bleuscore."""
     
-    def __init__(self, ngram: int = 4):
-        self.ngram = ngram
-        self.smoothing = SmoothingFunction().method1
+    def __init__(self, max_ngram: int = 4):
+        self.max_ngram = max_ngram
     
     def compute_self_bleu(self, texts: List[str]) -> float:
         """
         Compute Self-BLEU: average BLEU score of each text against all others.
         Lower scores indicate higher diversity.
+        
+        Uses bleuscore library for BLEU computation.
         """
         if len(texts) < 2:
             return 0.0
         
-        tokenized_texts = [nltk.word_tokenize(text.lower()) for text in texts]
         scores = []
+        tokenized_texts = [nltk.word_tokenize(text.lower()) for text in texts]
         
-        for i, hypothesis in enumerate(tokenized_texts):
+        for i, hypothesis_tokens in enumerate(tokenized_texts):
             references = tokenized_texts[:i] + tokenized_texts[i+1:]
+            if not hypothesis_tokens or not references:
+                continue
             
-            bleu_scores = []
-            for reference in references:
-                try:
-                    score = sentence_bleu([reference], hypothesis, 
-                                        weights=tuple([1.0/self.ngram] * self.ngram),
-                                        smoothing_function=self.smoothing)
-                    bleu_scores.append(score)
-                except:
-                    bleu_scores.append(0.0)
+            # Compute BLEU for this text against all others using bleuscore
+            # bleuscore expects tokenized references and a tokenized prediction
+            bleu_result = bleuscore.compute(
+                references=references,
+                predictions=hypothesis_tokens,
+                max_order=self.max_ngram,
+                smooth=True,
+            )
             
-            scores.append(np.mean(bleu_scores))
+            scores.append(float(bleu_result["bleu"]))
         
-        return float(np.mean(scores))
+        return float(np.mean(scores)) if scores else 0.0
 
 
 class RepetitionEvaluator:
@@ -149,12 +155,15 @@ class EvaluationPipeline:
     ) -> Dict[str, float]:
         """Run all metrics on the generated texts."""
         results = {}
-        
+        print("Starting evaluation of generated texts...")
         if compute_perplexity:
             results["perplexity"] = self.perplexity_eval.compute_perplexity(texts)
-        
+        print("Perplexity evaluation completed.")
         results["self_bleu"] = self.self_bleu_eval.compute_self_bleu(texts)
+        print("Self-BLEU evaluation completed.")
         results["repetition_4"] = self.repetition_eval.compute_repetition_4(texts)
+        print("Repetition-4 evaluation completed.")
         results["distinct_2"] = self.repetition_eval.compute_distinct_2(texts)
+        print("Distinct-2 evaluation completed.")
         
         return results
