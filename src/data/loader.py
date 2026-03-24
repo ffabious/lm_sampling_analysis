@@ -22,7 +22,7 @@ def create_dataloader(split_dir, batch_size=32, train_mode=True, num_workers=2, 
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=True,
-        persistent_workers=True,
+        persistent_workers=num_workers > 0,
         shuffle=shuffle,
         drop_last=drop_last,
     )

@@ -13,6 +13,7 @@ class BaseSampler:
         self.tokenizer = tokenizer
         self.device = device
         self.model.eval()
+        self._generation_calls = 0
 
     def _process_logits(self, logits: torch.Tensor, config: SamplingConfig) -> torch.Tensor:
         """To be overridden by specialized subclasses to apply specific filtering."""
@@ -32,8 +33,11 @@ class BaseSampler:
     ) -> Tuple[str, List[torch.Tensor]]:
 
         if seed is not None:
-            torch.manual_seed(seed)
-            np.random.seed(seed)
+            # Avoid repeating identical samples when the caller reuses the same seed.
+            effective_seed = seed + self._generation_calls
+            torch.manual_seed(effective_seed)
+            np.random.seed(effective_seed)
+        self._generation_calls += 1
 
         config.validate()
 
@@ -105,6 +109,13 @@ class BaseSampler:
 
             # Sample
             probs = F.softmax(next_token_logits, dim=-1)
+            if not torch.isfinite(probs).all() or probs.sum() <= 0:
+                fallback_logits = logits.clone()
+                if config.temperature != 1.0:
+                    fallback_logits = fallback_logits / config.temperature
+                probs = F.softmax(fallback_logits, dim=-1)
+                if not torch.isfinite(probs).all() or probs.sum() <= 0:
+                    probs = torch.full_like(probs, 1.0 / probs.numel())
             next_token = self._select_token(probs)
 
             # Update states

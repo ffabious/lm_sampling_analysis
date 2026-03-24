@@ -57,7 +57,14 @@ if __name__ == "__main__":
     model = GPT(config)
 
     state = torch.load(args.model_path, map_location=DEVICE)
-    model.load_state_dict(state["model_state_dict"])
+    if isinstance(state, dict) and "model_state_dict" in state:
+        model_state_dict = state["model_state_dict"]
+    elif isinstance(state, dict):
+        model_state_dict = state
+    else:
+        raise ValueError(f"Unsupported checkpoint format in: {args.model_path}")
+
+    model.load_state_dict(model_state_dict)
     model.to(DEVICE)
     model.eval()
 

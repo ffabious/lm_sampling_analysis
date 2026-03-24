@@ -33,3 +33,6 @@ events.out.tfevents.*
 
 # Environment variables
 .env
+
+# Evaluation results
+evaluation_results/*
