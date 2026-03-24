@@ -14,15 +14,24 @@ except LookupError:
 class PerplexityEvaluator:
     """Compute perplexity using a larger reference model."""
     
-    def __init__(self, model_name: str = "distilgpt2", device: str = "cpu"):
+    def __init__(self, model_name: str = "distilgpt2", device: str = "cpu", model=None, tokenizer=None):
         self.device = device
+        self.use_local_model = model is not None and tokenizer is not None
+
+        if self.use_local_model:
+            self.model = model
+            self.tokenizer = tokenizer
+            self.model.eval()
+            print("Using local GPT model/tokenizer for perplexity evaluation.")
+            return
+
         print(f"Loading reference model '{model_name}' for perplexity evaluation...")
         self.model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
         print(f"Loading tokenizer for '{model_name}'...")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
         print("Reference model and tokenizer loaded successfully.")
         self.model.eval()
-        
+
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
     
@@ -31,6 +40,36 @@ class PerplexityEvaluator:
         """Compute average perplexity for a list of texts."""
         total_loss = 0.0
         total_tokens = 0
+
+        if self.use_local_model:
+            for text in texts:
+                token_ids = self.tokenizer.encode(text, add_eos=False)
+                if len(token_ids) < 2:
+                    continue
+
+                max_seq_len = getattr(self.model.config, "max_seq_len", 256)
+                window = max_seq_len + 1
+
+                for start in range(0, len(token_ids) - 1, max_seq_len):
+                    segment = token_ids[start:start + window]
+                    if len(segment) < 2:
+                        continue
+
+                    inputs = torch.tensor([segment[:-1]], dtype=torch.long, device=self.device)
+                    labels = torch.tensor([segment[1:]], dtype=torch.long, device=self.device)
+
+                    outputs = self.model(inputs, labels=labels)
+                    loss = outputs["loss"]
+                    seq_tokens = labels.size(1)
+
+                    total_loss += loss.item() * seq_tokens
+                    total_tokens += seq_tokens
+
+            if total_tokens == 0:
+                return float("inf")
+
+            avg_loss = total_loss / total_tokens
+            return float(np.exp(avg_loss))
         
         for text in texts:
             inputs = self.tokenizer(text, return_tensors="pt", truncation=True, 
@@ -143,8 +182,8 @@ class RepetitionEvaluator:
 class EvaluationPipeline:
     """Run all evaluations for generated texts."""
     
-    def __init__(self, device: str = "cpu"):
-        self.perplexity_eval = PerplexityEvaluator(device=device)
+    def __init__(self, device: str = "cpu", model=None, tokenizer=None):
+        self.perplexity_eval = PerplexityEvaluator(device=device, model=model, tokenizer=tokenizer)
         self.self_bleu_eval = SelfBleuEvaluator()
         self.repetition_eval = RepetitionEvaluator()
     

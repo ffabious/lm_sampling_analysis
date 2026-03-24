@@ -14,12 +14,12 @@ from src.evaluation.metrics import EvaluationPipeline
 class EvaluationRunner:
     """Run evaluation experiments mapping algorithm names to initialized samplers."""
 
-    def __init__(self, samplers_dict, prompts: List[str], output_dir: str = "evaluation_results", device: str = "cpu"):
+    def __init__(self, samplers_dict, prompts: List[str], output_dir: str = "evaluation_results", device: str = "cpu", model=None, tokenizer=None):
         self.samplers = samplers_dict
         self.prompts = prompts
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.evaluator = EvaluationPipeline(device=device)
+        self.evaluator = EvaluationPipeline(device=device, model=model, tokenizer=tokenizer)
 
     def run_experiments(self, sampling_configs: dict, generations_per_prompt: int = 5, seeds: List[int] = [42], max_new_tokens: int = 256):
         results = {}

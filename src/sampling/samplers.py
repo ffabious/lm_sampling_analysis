@@ -14,7 +14,7 @@ class BaseSampler:
         self.device = device
         self.model.eval()
 
-    def _process_logits(self, logits: torch.Tensor) -> torch.Tensor:
+    def _process_logits(self, logits: torch.Tensor, config: SamplingConfig) -> torch.Tensor:
         """To be overridden by specialized subclasses to apply specific filtering."""
         return logits
 

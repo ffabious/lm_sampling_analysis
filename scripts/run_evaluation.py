@@ -6,6 +6,15 @@ from src.evaluation.evaluator import EvaluationRunner
 from src.data.tokenizer import LMTokenizer
 from src.models.gpt import GPT, GPTConfig
 
+
+def resolve_device(device_arg: str) -> str:
+    if device_arg == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if device_arg == "cuda" and not torch.cuda.is_available():
+        print("CUDA requested but not available; falling back to CPU.")
+        return "cpu"
+    return device_arg
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Run language model evaluation")
@@ -13,8 +22,8 @@ if __name__ == "__main__":
                         help="Path to the model checkpoint")
     parser.add_argument("--tokenizer_path", required=True,
                         help="Path to the tokenizer JSON file")
-    parser.add_argument("--device", default="cpu",
-                        help="Device to run inference on (default: cpu)")
+    parser.add_argument("--device", default="auto",
+                        help="Device to run inference on (auto|cpu|cuda)")
 
     args = parser.parse_args()
 
@@ -40,15 +49,17 @@ if __name__ == "__main__":
         "In a magical",
         "The adventurous rabbit"
     ]
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    DEVICE = resolve_device(args.device)
 
     tokenizer = LMTokenizer.from_json(args.tokenizer_path)
 
     config = GPTConfig(tokenizer.vocab_size)
     model = GPT(config)
 
-    state = torch.load(args.model_path)
+    state = torch.load(args.model_path, map_location=DEVICE)
     model.load_state_dict(state["model_state_dict"])
+    model.to(DEVICE)
+    model.eval()
 
     SAMPLERS_DICT = {
         "greedy": GreedySampler(model, tokenizer, DEVICE),
@@ -60,12 +71,12 @@ if __name__ == "__main__":
 
     SAMPLING_CONFIGS = {
         "greedy": [SamplingConfig()],
-        "random": [SamplingConfig(temperature=t) for t in [0.7, 1, 0, 1.5]],
+        "random": [SamplingConfig(temperature=t) for t in [0.7, 1.0, 1.5]],
         "top_k":  [SamplingConfig(top_k=k) for k in [10, 50]],
         "top_p":  [SamplingConfig(top_p=p) for p in [0.9, 0.95]],
         "locally_typical": [SamplingConfig(locally_typical_tau=tau) for tau in [0.2, 0.9, 1.5]]
     }
 
-    runner = EvaluationRunner(SAMPLERS_DICT, PROMPTS, device=DEVICE)
+    runner = EvaluationRunner(SAMPLERS_DICT, PROMPTS, device=DEVICE, model=model, tokenizer=tokenizer)
     results = runner.run_experiments(
-        SAMPLING_CONFIGS, generations_per_prompt=2, seeds=[42])
+        SAMPLING_CONFIGS, generations_per_prompt=10, seeds=[42,])
