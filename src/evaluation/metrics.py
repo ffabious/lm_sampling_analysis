@@ -1,21 +1,30 @@
+import re
+from typing import Dict, List, Optional
+
 import torch
 import numpy as np
-from typing import List, Dict
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
-import nltk
 import bleuscore
 
-try:
-    nltk.data.find('tokenizers/punkt')
-except LookupError:
-    nltk.download('punkt')
+
+def tokenize_for_metrics(text: str) -> List[str]:
+    """Stable word/punctuation tokenizer used by non-model text metrics."""
+    return re.findall(r"\w+|[^\w\s]", text.lower(), flags=re.UNICODE)
+
 
 class PerplexityEvaluator:
     """Compute perplexity using a larger reference model."""
     
-    def __init__(self, model_name: str = "distilgpt2", device: str = "cpu", model=None, tokenizer=None):
+    def __init__(
+        self,
+        model_name: str = "distilgpt2",
+        device: str = "cpu",
+        model=None,
+        tokenizer=None,
+        batch_size: int = 8,
+    ):
         self.device = device
+        self.batch_size = batch_size
         self.use_local_model = model is not None and tokenizer is not None
 
         if self.use_local_model:
@@ -38,6 +47,10 @@ class PerplexityEvaluator:
     @torch.no_grad()
     def compute_perplexity(self, texts: List[str]) -> float:
         """Compute average perplexity for a list of texts."""
+        texts = [text for text in texts if text and text.strip()]
+        if not texts:
+            return float("inf")
+
         total_loss = 0.0
         total_tokens = 0
 
@@ -71,17 +84,35 @@ class PerplexityEvaluator:
             avg_loss = total_loss / total_tokens
             return float(np.exp(avg_loss))
         
-        for text in texts:
-            inputs = self.tokenizer(text, return_tensors="pt", truncation=True, 
-                                   max_length=512, padding=True).to(self.device)
+        for start in range(0, len(texts), self.batch_size):
+            batch_texts = texts[start:start + self.batch_size]
+            inputs = self.tokenizer(
+                batch_texts,
+                return_tensors="pt",
+                truncation=True,
+                max_length=512,
+                padding=True,
+            ).to(self.device)
+
+            input_ids = inputs["input_ids"]
+            attention_mask = inputs["attention_mask"]
+            labels = input_ids.clone()
+            labels[attention_mask == 0] = -100
+
+            # Causal LM loss predicts tokens 1..N-1 from earlier context.
+            target_tokens = int(torch.clamp(attention_mask.sum(dim=1) - 1, min=0).sum().item())
+            if target_tokens == 0:
+                continue
             
-            outputs = self.model(**inputs, labels=inputs["input_ids"])
+            outputs = self.model(**inputs, labels=labels)
             loss = outputs.loss
             
-            # Perplexity = exp(loss)
-            total_loss += loss.item() * inputs["input_ids"].size(1)
-            total_tokens += inputs["input_ids"].size(1)
+            total_loss += loss.item() * target_tokens
+            total_tokens += target_tokens
         
+        if total_tokens == 0:
+            return float("inf")
+
         avg_loss = total_loss / total_tokens
         return float(np.exp(avg_loss))
 
@@ -103,7 +134,7 @@ class SelfBleuEvaluator:
             return 0.0
         
         scores = []
-        tokenized_texts = [nltk.word_tokenize(text.lower()) for text in texts]
+        tokenized_texts = [tokenize_for_metrics(text) for text in texts]
         
         for i, hypothesis_tokens in enumerate(tokenized_texts):
             references = tokenized_texts[:i] + tokenized_texts[i+1:]
@@ -133,7 +164,7 @@ class RepetitionEvaluator:
         repetition_count = 0
         
         for text in texts:
-            words = nltk.word_tokenize(text.lower())
+            words = tokenize_for_metrics(text)
             if len(words) < 4:
                 continue
             
@@ -163,7 +194,7 @@ class RepetitionEvaluator:
         total_ngrams = 0
         
         for text in texts:
-            words = nltk.word_tokenize(text.lower())
+            words = tokenize_for_metrics(text)
             if len(words) < 2:
                 continue
             
@@ -182,8 +213,38 @@ class RepetitionEvaluator:
 class EvaluationPipeline:
     """Run all evaluations for generated texts."""
     
-    def __init__(self, device: str = "cpu", model=None, tokenizer=None):
-        self.perplexity_eval = PerplexityEvaluator(device=device, model=model, tokenizer=tokenizer)
+    def __init__(
+        self,
+        device: str = "cpu",
+        model=None,
+        tokenizer=None,
+        reference_model_name: str = "distilgpt2",
+        perplexity_source: str = "reference",
+        perplexity_batch_size: int = 8,
+    ):
+        if perplexity_source not in {"reference", "local", "none"}:
+            raise ValueError(
+                "perplexity_source must be one of: reference, local, none"
+            )
+
+        self.perplexity_source = perplexity_source
+        self.perplexity_eval: Optional[PerplexityEvaluator] = None
+        if perplexity_source == "reference":
+            self.perplexity_eval = PerplexityEvaluator(
+                model_name=reference_model_name,
+                device=device,
+                batch_size=perplexity_batch_size,
+            )
+        elif perplexity_source == "local":
+            if model is None or tokenizer is None:
+                raise ValueError("Local perplexity requires model and tokenizer.")
+            self.perplexity_eval = PerplexityEvaluator(
+                device=device,
+                model=model,
+                tokenizer=tokenizer,
+                batch_size=perplexity_batch_size,
+            )
+
         self.self_bleu_eval = SelfBleuEvaluator()
         self.repetition_eval = RepetitionEvaluator()
     
@@ -195,9 +256,9 @@ class EvaluationPipeline:
         """Run all metrics on the generated texts."""
         results = {}
         print("Starting evaluation of generated texts...")
-        if compute_perplexity:
+        if compute_perplexity and self.perplexity_eval is not None:
             results["perplexity"] = self.perplexity_eval.compute_perplexity(texts)
-        print("Perplexity evaluation completed.")
+            print("Perplexity evaluation completed.")
         results["self_bleu"] = self.self_bleu_eval.compute_self_bleu(texts)
         print("Self-BLEU evaluation completed.")
         results["repetition_4"] = self.repetition_eval.compute_repetition_4(texts)

@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
-from typing import List, Optional, Tuple, Set
+from typing import Dict, List, Optional, Tuple, Set
 from src.sampling.config import SamplingConfig
 
 
@@ -24,19 +24,17 @@ class BaseSampler:
         return torch.multinomial(probs, num_samples=1)[0]
 
     @torch.no_grad()
-    def generate(
+    def generate_details(
         self,
         prompt: str,
         config: SamplingConfig,
         max_new_tokens: int = 256,
         seed: Optional[int] = None,
-    ) -> Tuple[str, List[torch.Tensor]]:
+    ) -> Dict:
 
         if seed is not None:
-            # Avoid repeating identical samples when the caller reuses the same seed.
-            effective_seed = seed + self._generation_calls
-            torch.manual_seed(effective_seed)
-            np.random.seed(effective_seed)
+            torch.manual_seed(seed)
+            np.random.seed(seed)
         self._generation_calls += 1
 
         config.validate()
@@ -46,14 +44,17 @@ class BaseSampler:
 
         input_ids = torch.tensor(
             [input_ids], dtype=torch.long, device=self.device)
+        prompt_token_count = input_ids.size(1)
 
         max_seq_len = getattr(self.model.config, "max_seq_len", None)
         if max_seq_len is not None and input_ids.size(1) > max_seq_len:
             input_ids = input_ids[:, -max_seq_len:]
+            prompt_token_count = input_ids.size(1)
 
         generated = input_ids.clone()
         past_key_values = None
         all_logits = []
+        stopped_on_eos = False
 
         # Track generated n-grams for repetition control
         generated_ngrams = set()
@@ -130,9 +131,45 @@ class BaseSampler:
 
             # Check EOS
             if next_token.item() == self.tokenizer.special_tokens.get("<EOS>", -1):
+                stopped_on_eos = True
                 break
 
-        return self.tokenizer.decode(generated[0].tolist()), all_logits
+        all_token_ids = generated[0].tolist()
+        continuation_token_ids = all_token_ids[prompt_token_count:]
+        output_token_ids = self._strip_output_special_tokens(all_token_ids)
+        output_continuation_ids = self._strip_output_special_tokens(continuation_token_ids)
+
+        return {
+            "full_text": self.tokenizer.decode(output_token_ids),
+            "continuation": self.tokenizer.decode(output_continuation_ids),
+            "prompt_token_count": prompt_token_count,
+            "new_token_count": len(continuation_token_ids),
+            "stopped_on_eos": stopped_on_eos,
+            "all_token_ids": all_token_ids,
+            "continuation_token_ids": continuation_token_ids,
+            "logits": all_logits,
+        }
+
+    @torch.no_grad()
+    def generate(
+        self,
+        prompt: str,
+        config: SamplingConfig,
+        max_new_tokens: int = 256,
+        seed: Optional[int] = None,
+    ) -> Tuple[str, List[torch.Tensor]]:
+        details = self.generate_details(prompt, config, max_new_tokens=max_new_tokens, seed=seed)
+        return details["full_text"], details["logits"]
+
+    def _strip_output_special_tokens(self, token_ids: List[int]) -> List[int]:
+        excluded = {
+            token_id
+            for token, token_id in self.tokenizer.special_tokens.items()
+            if token in {"<EOS>", "<PAD>"}
+        }
+        if not excluded:
+            return token_ids
+        return [token_id for token_id in token_ids if token_id not in excluded]
 
 
 

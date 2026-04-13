@@ -1,4 +1,7 @@
+import csv
 import json
+import time
+from dataclasses import asdict, is_dataclass
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
@@ -11,44 +14,149 @@ import seaborn as sns
 from src.evaluation.metrics import EvaluationPipeline
 
 
+METRIC_KEYS = ("perplexity", "self_bleu", "repetition_4", "distinct_2")
+
+
 class EvaluationRunner:
     """Run evaluation experiments mapping algorithm names to initialized samplers."""
 
-    def __init__(self, samplers_dict, prompts: List[str], output_dir: str = "evaluation_results", device: str = "cpu", model=None, tokenizer=None):
+    def __init__(
+        self,
+        samplers_dict,
+        prompts: List[str],
+        output_dir: str = "evaluation_results",
+        device: str = "cpu",
+        model=None,
+        tokenizer=None,
+        reference_model_name: str = "distilgpt2",
+        perplexity_source: str = "reference",
+        perplexity_batch_size: int = 8,
+        metric_text_field: str = "continuation",
+    ):
+        if metric_text_field not in {"continuation", "full_text"}:
+            raise ValueError("metric_text_field must be continuation or full_text")
+
         self.samplers = samplers_dict
         self.prompts = prompts
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.evaluator = EvaluationPipeline(device=device, model=model, tokenizer=tokenizer)
+        self.metric_text_field = metric_text_field
+        self.evaluator = EvaluationPipeline(
+            device=device,
+            model=model,
+            tokenizer=tokenizer,
+            reference_model_name=reference_model_name,
+            perplexity_source=perplexity_source,
+            perplexity_batch_size=perplexity_batch_size,
+        )
+        self.perplexity_source = perplexity_source
+        self.reference_model_name = reference_model_name
 
-    def run_experiments(self, sampling_configs: dict, generations_per_prompt: int = 5, seeds: List[int] = [42], max_new_tokens: int = 256):
-        results = {}
+    def run_experiments(
+        self,
+        sampling_configs: dict,
+        generations_per_prompt: int = 50,
+        seeds: List[int] = None,
+        max_new_tokens: int = 256,
+        save_generations: bool = True,
+    ):
+        if seeds is None:
+            seeds = [42, 43, 44]
+
+        generation_path = self.output_dir / "generations.jsonl"
+        if save_generations:
+            generation_path.write_text("", encoding="utf-8")
+
+        seed_results = []
         for method_name, configs in sampling_configs.items():
             print(f"\nEvaluating {method_name}...")
             sampler = self.samplers.get(method_name)
             if not sampler:
                 continue
 
-            method_results = []
-            for idx, config in enumerate(configs):
-                print(f"  Config {idx + 1}: {config}")
+            for config_index, config in enumerate(configs):
+                print(f"  Config {config_index + 1}: {config}")
                 for seed in seeds:
-                    all_texts = [
-                        sampler.generate(
-                            prompt, config, max_new_tokens, seed=seed)[0]
-                        for prompt in tqdm(self.prompts, desc=f"    Seed {seed}")
-                        for _ in range(generations_per_prompt)
-                    ]
+                    all_texts = []
+                    generation_records = []
 
-                    method_results.append({
+                    for prompt_index, prompt in enumerate(tqdm(self.prompts, desc=f"    Seed {seed}")):
+                        for sample_index in range(generations_per_prompt):
+                            generation_seed = self._generation_seed(
+                                seed,
+                                prompt_index,
+                                sample_index,
+                                generations_per_prompt,
+                            )
+                            details = sampler.generate_details(
+                                prompt,
+                                config,
+                                max_new_tokens=max_new_tokens,
+                                seed=generation_seed,
+                            )
+
+                            metric_text = details[self.metric_text_field]
+                            all_texts.append(metric_text)
+                            generation_records.append({
+                                "method": method_name,
+                                "config_index": config_index,
+                                "config": self._config_to_dict(config),
+                                "config_label": self._config_label(config),
+                                "seed": seed,
+                                "generation_seed": generation_seed,
+                                "prompt_id": prompt_index,
+                                "prompt": prompt,
+                                "sample_id": sample_index,
+                                "full_text": details["full_text"],
+                                "continuation": details["continuation"],
+                                "metric_text_field": self.metric_text_field,
+                                "new_token_count": details["new_token_count"],
+                                "stopped_on_eos": details["stopped_on_eos"],
+                            })
+
+                    if save_generations:
+                        self._append_jsonl(generation_path, generation_records)
+
+                    metrics = self.evaluator.evaluate(
+                        all_texts,
+                        compute_perplexity=self.perplexity_source != "none",
+                    )
+
+                    seed_results.append({
                         "method": method_name,
-                        "config": str(config),
+                        "config_index": config_index,
+                        "config": self._config_to_dict(config),
+                        "config_label": self._config_label(config),
                         "seed": seed,
-                        "metrics": self.evaluator.evaluate(all_texts, compute_perplexity=True),
-                        "num_samples": len(all_texts)
+                        "metrics": metrics,
+                        "num_samples": len(all_texts),
+                        "mean_new_tokens": float(np.mean([
+                            record["new_token_count"] for record in generation_records
+                        ])),
+                        "eos_rate": float(np.mean([
+                            record["stopped_on_eos"] for record in generation_records
+                        ])),
                     })
-            results[method_name] = method_results
 
+        summary = self._summarize_seed_results(seed_results)
+        results = {
+            "metadata": {
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "num_prompts": len(self.prompts),
+                "prompts": self.prompts,
+                "generations_per_prompt": generations_per_prompt,
+                "seeds": seeds,
+                "max_new_tokens": max_new_tokens,
+                "metric_text_field": self.metric_text_field,
+                "perplexity_source": self.perplexity_source,
+                "reference_model_name": (
+                    self.reference_model_name if self.perplexity_source == "reference" else None
+                ),
+                "generation_file": str(generation_path) if save_generations else None,
+            },
+            "seed_results": seed_results,
+            "summary": summary,
+        }
         self._generate_plots(results)
         self._save_results(results)
         return results
@@ -68,72 +176,131 @@ class EvaluationRunner:
 
         with open(self.output_dir / "results.json", "w") as f:
             json.dump(results, f, default=convert_to_serializable, indent=2)
+        self._save_summary_csv(results)
 
-    def _generate_plots(self, results: Dict):
-        plot_data = []
-
-        for method_name, method_results in results.items():
-            for result in method_results:
-                plot_data.append({
-                    "method": method_name,
-                    "config": str(result["config"]),
-                    "perplexity": result["metrics"]["perplexity"],
-                    "self_bleu": result["metrics"]["self_bleu"],
-                    "repetition_4": result["metrics"]["repetition_4"],
-                    "distinct_2": result["metrics"]["distinct_2"],
-                    "seed": result["seed"]
+    def _save_summary_csv(self, results: Dict):
+        fieldnames = [
+            "method",
+            "config_index",
+            "config_label",
+            "num_seeds",
+            "seeds",
+            "num_samples_per_seed",
+            "perplexity_mean",
+            "perplexity_std",
+            "self_bleu_mean",
+            "self_bleu_std",
+            "repetition_4_mean",
+            "repetition_4_std",
+            "distinct_2_mean",
+            "distinct_2_std",
+            "mean_new_tokens_mean",
+            "mean_new_tokens_std",
+            "eos_rate_mean",
+            "eos_rate_std",
+        ]
+        with open(self.output_dir / "summary.csv", "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in results["summary"]:
+                metrics = row["metrics"]
+                writer.writerow({
+                    "method": row["method"],
+                    "config_index": row["config_index"],
+                    "config_label": row["config_label"],
+                    "num_seeds": row["num_seeds"],
+                    "seeds": ",".join(str(seed) for seed in row["seeds"]),
+                    "num_samples_per_seed": ",".join(
+                        str(num_samples) for num_samples in row["num_samples_per_seed"]
+                    ),
+                    "perplexity_mean": metrics.get("perplexity", {}).get("mean"),
+                    "perplexity_std": metrics.get("perplexity", {}).get("std"),
+                    "self_bleu_mean": metrics["self_bleu"]["mean"],
+                    "self_bleu_std": metrics["self_bleu"]["std"],
+                    "repetition_4_mean": metrics["repetition_4"]["mean"],
+                    "repetition_4_std": metrics["repetition_4"]["std"],
+                    "distinct_2_mean": metrics["distinct_2"]["mean"],
+                    "distinct_2_std": metrics["distinct_2"]["std"],
+                    "mean_new_tokens_mean": row["mean_new_tokens"]["mean"],
+                    "mean_new_tokens_std": row["mean_new_tokens"]["std"],
+                    "eos_rate_mean": row["eos_rate"]["mean"],
+                    "eos_rate_std": row["eos_rate"]["std"],
                 })
 
+    def _generate_plots(self, results: Dict):
+        plot_data = [
+            {
+                "method": row["method"],
+                "config_label": row["config_label"],
+                "perplexity_mean": row["metrics"].get("perplexity", {}).get("mean"),
+                "perplexity_std": row["metrics"].get("perplexity", {}).get("std"),
+                "self_bleu_mean": row["metrics"]["self_bleu"]["mean"],
+                "self_bleu_std": row["metrics"]["self_bleu"]["std"],
+                "repetition_4_mean": row["metrics"]["repetition_4"]["mean"],
+                "repetition_4_std": row["metrics"]["repetition_4"]["std"],
+                "distinct_2_mean": row["metrics"]["distinct_2"]["mean"],
+                "distinct_2_std": row["metrics"]["distinct_2"]["std"],
+            }
+            for row in results["summary"]
+        ]
+
         # Quality vs diversity plot
-        plt.figure(figsize=(10, 8))
-        sns.set_style("whitegrid")
+        if self.perplexity_source != "none":
+            plt.figure(figsize=(10, 8))
+            sns.set_style("whitegrid")
 
-        for method_name in results.keys():
-            method_points = [
-                d for d in plot_data if d["method"] == method_name]
-            if method_points:
-                x = [d["self_bleu"] for d in method_points]
-                y = [d["perplexity"] for d in method_points]
-                plt.scatter(x, y, label=method_name, alpha=0.6, s=100)
+            for method_name in sorted({d["method"] for d in plot_data}):
+                method_points = [
+                    d for d in plot_data
+                    if d["method"] == method_name and d["perplexity_mean"] is not None
+                ]
+                if method_points:
+                    x = [d["self_bleu_mean"] for d in method_points]
+                    y = [d["perplexity_mean"] for d in method_points]
+                    xerr = [d["self_bleu_std"] for d in method_points]
+                    yerr = [d["perplexity_std"] for d in method_points]
+                    plt.errorbar(
+                        x,
+                        y,
+                        xerr=xerr,
+                        yerr=yerr,
+                        fmt="o",
+                        capsize=3,
+                        label=method_name,
+                        alpha=0.75,
+                    )
 
-        plt.xlabel("Self-BLEU (lower = more diverse)", fontsize=12)
-        plt.ylabel("Perplexity (lower = more natural)", fontsize=12)
-        plt.title("Quality vs Diversity Trade-off", fontsize=14)
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(self.output_dir / "quality_vs_diversity.png", dpi=150)
-        plt.close()
+            plt.xlabel("Self-BLEU (lower = more diverse)", fontsize=12)
+            plt.ylabel("Perplexity (lower = more natural)", fontsize=12)
+            plt.title("Quality vs Diversity Trade-off", fontsize=14)
+            plt.legend()
+            plt.tight_layout()
+            plt.savefig(self.output_dir / "quality_vs_diversity.png", dpi=150)
+            plt.close()
 
         # Repetition plot
-        plt.figure(figsize=(12, 6))
+        if not plot_data:
+            return
 
-        methods = list(results.keys())
-        x_pos = np.arange(len(methods))
+        plt.figure(figsize=(14, 6))
 
-        repetition_means = []
-        repetition_stds = []
-        distinct_means = []
-        distinct_stds = []
+        labels = [f"{d['method']}\n{d['config_label']}" for d in plot_data]
+        x_pos = np.arange(len(labels))
 
-        for method in methods:
-            method_results = [d for d in plot_data if d["method"] == method]
-            repetition = [d["repetition_4"] for d in method_results]
-            distinct = [d["distinct_2"] for d in method_results]
-
-            repetition_means.append(np.mean(repetition))
-            repetition_stds.append(np.std(repetition))
-            distinct_means.append(np.mean(distinct))
-            distinct_stds.append(np.std(distinct))
+        repetition_means = [d["repetition_4_mean"] for d in plot_data]
+        repetition_stds = [d["repetition_4_std"] for d in plot_data]
+        distinct_means = [d["distinct_2_mean"] for d in plot_data]
+        distinct_stds = [d["distinct_2_std"] for d in plot_data]
 
         plt.subplot(1, 2, 1)
         plt.bar(x_pos, repetition_means, yerr=repetition_stds, capsize=5)
-        plt.xticks(x_pos, methods, rotation=45, ha='right')
+        plt.xticks(x_pos, labels, rotation=70, ha='right')
         plt.ylabel("Repetition-4 (lower is better)")
         plt.title("Repetition rate")
 
         plt.subplot(1, 2, 2)
         plt.bar(x_pos, distinct_means, yerr=distinct_stds, capsize=5)
-        plt.xticks(x_pos, methods, rotation=45, ha='right')
+        plt.xticks(x_pos, labels, rotation=70, ha='right')
         plt.ylabel("Distinct-2 (higher is better)")
         plt.title("Vocabulary richness")
 
@@ -142,3 +309,84 @@ class EvaluationRunner:
         plt.close()
 
         print(f"\nPlots saved to {self.output_dir}")
+
+    @staticmethod
+    def _append_jsonl(path: Path, records: List[Dict]):
+        with path.open("a", encoding="utf-8") as f:
+            for record in records:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    @staticmethod
+    def _config_to_dict(config):
+        if is_dataclass(config):
+            return asdict(config)
+        if hasattr(config, "__dict__"):
+            return dict(config.__dict__)
+        return {"value": str(config)}
+
+    @staticmethod
+    def _config_label(config) -> str:
+        config_dict = EvaluationRunner._config_to_dict(config)
+        active = [
+            f"{key}={value}"
+            for key, value in config_dict.items()
+            if value is not None and not (key == "temperature" and value == 1.0)
+        ]
+        return ", ".join(active) if active else "default"
+
+    @staticmethod
+    def _generation_seed(
+        seed: int,
+        prompt_index: int,
+        sample_index: int,
+        generations_per_prompt: int,
+    ) -> int:
+        return seed * 1_000_000 + prompt_index * generations_per_prompt + sample_index
+
+    @staticmethod
+    def _summarize_seed_results(seed_results: List[Dict]) -> List[Dict]:
+        grouped = {}
+        for result in seed_results:
+            key = (result["method"], result["config_index"])
+            grouped.setdefault(key, []).append(result)
+
+        summary = []
+        for (method, config_index), rows in grouped.items():
+            first = rows[0]
+            metrics = {}
+            for metric in METRIC_KEYS:
+                values = [
+                    row["metrics"][metric]
+                    for row in rows
+                    if metric in row["metrics"] and np.isfinite(row["metrics"][metric])
+                ]
+                if not values:
+                    continue
+                metrics[metric] = {
+                    "mean": float(np.mean(values)),
+                    "std": float(np.std(values, ddof=1)) if len(values) > 1 else 0.0,
+                    "values": [float(value) for value in values],
+                }
+
+            summary.append({
+                "method": method,
+                "config_index": config_index,
+                "config": first["config"],
+                "config_label": first["config_label"],
+                "num_seeds": len(rows),
+                "seeds": [row["seed"] for row in rows],
+                "num_samples_per_seed": [row["num_samples"] for row in rows],
+                "mean_new_tokens": {
+                    "mean": float(np.mean([row["mean_new_tokens"] for row in rows])),
+                    "std": float(np.std([row["mean_new_tokens"] for row in rows], ddof=1))
+                    if len(rows) > 1 else 0.0,
+                },
+                "eos_rate": {
+                    "mean": float(np.mean([row["eos_rate"] for row in rows])),
+                    "std": float(np.std([row["eos_rate"] for row in rows], ddof=1))
+                    if len(rows) > 1 else 0.0,
+                },
+                "metrics": metrics,
+            })
+
+        return sorted(summary, key=lambda row: (row["method"], row["config_index"]))
