@@ -240,17 +240,36 @@ class TopPSampler(BaseSampler):
 
 
 class LocallyTypicalSampler(BaseSampler):
-    """Filters out tokens not consistent with the typical set (entropy based)."""
+    """Filters logits using locally typical sampling."""
     def _process_logits(self, logits: torch.Tensor, config: SamplingConfig) -> torch.Tensor:
-        if config.locally_typical_tau is None: return logits
-        probs = F.softmax(logits, dim=-1)
-        log_probs = F.log_softmax(logits, dim=-1)
-        entropy = -torch.sum(probs * log_probs)
-        
-        abs_diff = torch.abs(-log_probs - entropy)
-        mask = abs_diff <= config.locally_typical_tau
-        
-        if not mask.any(): 
+        tau = config.locally_typical_tau
+        if tau is None:
+            return logits
+        if not (0.0 < tau <= 1.0):
+            raise ValueError("locally_typical_tau must be in (0, 1].")
+
+        if torch.all(torch.isneginf(logits)):
             return logits
 
-        return torch.where(mask, logits, torch.full_like(logits, -float('Inf')))
+        log_probs = F.log_softmax(logits, dim=-1)
+        probs = torch.exp(log_probs)
+        entropy = -(probs * log_probs).sum()
+
+        abs_diff = torch.abs(-log_probs - entropy)
+
+        sorted_diff, sorted_indices = torch.sort(abs_diff, descending=False)
+        sorted_probs = probs[sorted_indices]
+        cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+
+        keep_sorted = cumulative_probs < tau
+        keep_sorted[0] = True
+
+        cutoff = torch.searchsorted(cumulative_probs, torch.tensor(tau, device=logits.device))
+        cutoff = min(cutoff.item(), logits.size(-1) - 1)
+        keep_sorted[cutoff] = True
+
+        keep_mask = torch.zeros_like(logits, dtype=torch.bool)
+        keep_mask[sorted_indices[keep_sorted]] = True
+
+        filtered_logits = logits.masked_fill(~keep_mask, -float("inf"))
+        return filtered_logits
