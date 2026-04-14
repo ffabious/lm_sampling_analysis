@@ -250,6 +250,9 @@ class EvaluationRunner:
             plt.figure(figsize=(10, 8))
             sns.set_style("whitegrid")
 
+            all_x = []
+            all_y = []
+
             for method_name in sorted({d["method"] for d in plot_data}):
                 method_points = [
                     d for d in plot_data
@@ -260,6 +263,8 @@ class EvaluationRunner:
                     y = [d["perplexity_mean"] for d in method_points]
                     xerr = [d["self_bleu_std"] for d in method_points]
                     yerr = [d["perplexity_std"] for d in method_points]
+                    all_x.extend(x)
+                    all_y.extend(y)
                     plt.errorbar(
                         x,
                         y,
@@ -270,6 +275,38 @@ class EvaluationRunner:
                         label=self._method_label(method_name),
                         alpha=0.75,
                     )
+
+            fit = self._fit_hyperbolic_curve(np.array(all_x, dtype=float), np.array(all_y, dtype=float))
+            if fit is not None:
+                x_min = float(np.min(all_x))
+                x_max = float(np.max(all_x))
+                x_fit = np.linspace(x_min, x_max, 400)
+                y_fit = fit["a"] / (x_fit + fit["b"]) + fit["c"]
+                plt.plot(
+                    x_fit,
+                    y_fit,
+                    linestyle="--",
+                    color="black",
+                    linewidth=1.8,
+                    alpha=0.9,
+                    label=f"Hyperbolic fit (R^2={fit['r2']:.3f})",
+                )
+                b_sign = "+" if fit["b"] >= 0 else "-"
+                c_sign = "+" if fit["c"] >= 0 else "-"
+                equation = (
+                    f"y = {fit['a']:.2f} / (x {b_sign} {abs(fit['b']):.3f}) "
+                    f"{c_sign} {abs(fit['c']):.2f}"
+                )
+                plt.text(
+                    0.02,
+                    0.98,
+                    equation,
+                    transform=plt.gca().transAxes,
+                    va="top",
+                    ha="left",
+                    fontsize=10,
+                    bbox={"boxstyle": "round,pad=0.25", "facecolor": "white", "alpha": 0.7},
+                )
 
             plt.xlabel("Self-BLEU (lower = more diverse)", fontsize=12)
             plt.ylabel("Perplexity (lower = more natural)", fontsize=12)
@@ -401,6 +438,49 @@ class EvaluationRunner:
         generations_per_prompt: int,
     ) -> int:
         return seed * 1_000_000 + prompt_index * generations_per_prompt + sample_index
+
+    @staticmethod
+    def _fit_hyperbolic_curve(x: np.ndarray, y: np.ndarray):
+        """Fit y = a / (x + b) + c by grid-searching b and solving (a, c) with least squares."""
+        finite_mask = np.isfinite(x) & np.isfinite(y)
+        x = x[finite_mask]
+        y = y[finite_mask]
+
+        if x.size < 3:
+            return None
+
+        min_x = float(np.min(x))
+        max_x = float(np.max(x))
+        if np.isclose(min_x, max_x):
+            return None
+
+        lower_b = -min_x + 1e-4
+        upper_b = max(2.0, 10.0 * (max_x - min_x))
+        b_candidates = np.linspace(lower_b, upper_b, 800)
+
+        best = None
+        for b in b_candidates:
+            denom = x + b
+            if np.any(denom <= 1e-9):
+                continue
+
+            design = np.column_stack((1.0 / denom, np.ones_like(denom)))
+            coeffs, _, _, _ = np.linalg.lstsq(design, y, rcond=None)
+            a, c = float(coeffs[0]), float(coeffs[1])
+            y_pred = design @ coeffs
+            sse = float(np.sum((y - y_pred) ** 2))
+
+            if not np.isfinite(sse):
+                continue
+            if best is None or sse < best["sse"]:
+                best = {"sse": sse, "a": a, "b": float(b), "c": c}
+
+        if best is None:
+            return None
+
+        sst = float(np.sum((y - np.mean(y)) ** 2))
+        best["r2"] = 1.0 - best["sse"] / sst if sst > 0 else 1.0
+        return best
 
     @staticmethod
     def _summarize_seed_results(seed_results: List[Dict]) -> List[Dict]:
