@@ -231,6 +231,7 @@ class EvaluationRunner:
         plot_data = [
             {
                 "method": row["method"],
+                "config": row.get("config", {}),
                 "config_label": row["config_label"],
                 "perplexity_mean": row["metrics"].get("perplexity", {}).get("mean"),
                 "perplexity_std": row["metrics"].get("perplexity", {}).get("std"),
@@ -266,7 +267,7 @@ class EvaluationRunner:
                         yerr=yerr,
                         fmt="o",
                         capsize=3,
-                        label=method_name,
+                        label=self._method_label(method_name),
                         alpha=0.75,
                     )
 
@@ -282,9 +283,9 @@ class EvaluationRunner:
         if not plot_data:
             return
 
-        plt.figure(figsize=(14, 6))
+        plt.figure(figsize=(16, 6))
 
-        labels = [f"{d['method']}\n{d['config_label']}" for d in plot_data]
+        labels = [self._plot_label(d) for d in plot_data]
         x_pos = np.arange(len(labels))
 
         repetition_means = [d["repetition_4_mean"] for d in plot_data]
@@ -294,13 +295,13 @@ class EvaluationRunner:
 
         plt.subplot(1, 2, 1)
         plt.bar(x_pos, repetition_means, yerr=repetition_stds, capsize=5)
-        plt.xticks(x_pos, labels, rotation=70, ha='right')
+        plt.xticks(x_pos, labels, rotation=45, ha='right', fontsize=9)
         plt.ylabel("Repetition-4 (lower is better)")
         plt.title("Repetition rate")
 
         plt.subplot(1, 2, 2)
         plt.bar(x_pos, distinct_means, yerr=distinct_stds, capsize=5)
-        plt.xticks(x_pos, labels, rotation=70, ha='right')
+        plt.xticks(x_pos, labels, rotation=45, ha='right', fontsize=9)
         plt.ylabel("Distinct-2 (higher is better)")
         plt.title("Vocabulary richness")
 
@@ -333,6 +334,64 @@ class EvaluationRunner:
             if value is not None and not (key == "temperature" and value == 1.0)
         ]
         return ", ".join(active) if active else "default"
+
+    @staticmethod
+    def _method_label(method: str) -> str:
+        labels = {
+            "greedy": "Greedy",
+            "random": "Random",
+            "temperature": "Temperature",
+            "top_k": "Top-k",
+            "top_p": "Top-p",
+            "repetition_control": "Repetition control",
+            "locally_typical": "Locally typical",
+        }
+        return labels.get(method, method.replace("_", " ").title())
+
+    @staticmethod
+    def _plot_label(row: Dict) -> str:
+        method = row["method"]
+        config = row.get("config") or {}
+
+        if method == "greedy":
+            return "Greedy"
+        if method == "random":
+            return "Random"
+        if method == "temperature":
+            return f"Temp {EvaluationRunner._format_config_value(config.get('temperature', 1.0))}"
+        if method == "top_k" and config.get("top_k") is not None:
+            return f"Top-k {EvaluationRunner._format_config_value(config['top_k'])}"
+        if method == "top_p" and config.get("top_p") is not None:
+            return f"Top-p {EvaluationRunner._format_config_value(config['top_p'])}"
+        if method == "locally_typical" and config.get("locally_typical_tau") is not None:
+            return f"Typical {EvaluationRunner._format_config_value(config['locally_typical_tau'])}"
+        if method == "repetition_control":
+            if config.get("no_repeat_ngram_size") is not None:
+                return f"No repeat {EvaluationRunner._format_config_value(config['no_repeat_ngram_size'])}"
+            if config.get("repetition_penalty") is not None:
+                return f"Rep pen {EvaluationRunner._format_config_value(config['repetition_penalty'])}"
+
+        config_label = row.get("config_label", "default")
+        if config_label == "default":
+            return EvaluationRunner._method_label(method)
+        return EvaluationRunner._short_config_label(config_label)
+
+    @staticmethod
+    def _short_config_label(config_label: str) -> str:
+        return (
+            config_label
+            .replace("locally_typical_tau", "tau")
+            .replace("no_repeat_ngram_size", "no repeat")
+            .replace("repetition_penalty", "rep pen")
+            .replace("temperature", "temp")
+            .replace("_", " ")
+        )
+
+    @staticmethod
+    def _format_config_value(value) -> str:
+        if isinstance(value, float):
+            return f"{value:g}"
+        return str(value)
 
     @staticmethod
     def _generation_seed(
